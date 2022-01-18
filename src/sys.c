@@ -36,8 +36,6 @@ extern u16 randbase;
 extern TCBloc *uploads;
 
 // extern library callback function (we don't want to share them)
-extern u16 BMP_doHBlankProcess();
-extern u16 BMP_doVBlankProcess();
 extern u16 TC_doVBlankProcess();
 extern u16 SPR_doVBlankProcess();
 
@@ -386,11 +384,7 @@ void _vint_callback()
     {
         if (!SPR_doVBlankProcess()) VIntProcess &= ~PROCESS_SPRITEENGINE_TASK;
     }
-    // bitmap processing
-    if (VIntProcess & PROCESS_BITMAP_TASK)
-    {
-        if (!BMP_doVBlankProcess()) VIntProcess &= ~PROCESS_BITMAP_TASK;
-    }
+    
     // palette fading processing
     if (VIntProcess & PROCESS_PALETTE_FADING)
     {
@@ -412,12 +406,6 @@ void _vint_callback()
 void _hint_callback()
 {
     intTrace |= IN_HINT;
-
-    // bitmap processing
-    if (HIntProcess & PROCESS_BITMAP_TASK)
-    {
-        if (!BMP_doHBlankProcess()) HIntProcess &= ~PROCESS_BITMAP_TASK;
-    }
 
     // ...
 

@@ -18,9 +18,9 @@
 #include "z80_tfm.h"
 #include "z80_vgm.h"
 #include "z80_xgm.h"
+#include "tab_vol.h"
 #endif
 
-#include "tab_vol.h"
 #include "smp_null.h"
 #include "smp_null_pcm.h"
 
@@ -211,12 +211,12 @@ void Z80_loadDriver(const u16 driver, const u16 waitReady)
             len = sizeof(z80_drv2);
             break;
 
+#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_4PCM_ENV:
             drv = z80_drv3;
             len = sizeof(z80_drv3);
             break;
 
-#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_MVS:
             drv = z80_mvs;
             len = sizeof(z80_mvs);
@@ -286,6 +286,7 @@ void Z80_loadDriver(const u16 driver, const u16 waitReady)
             Z80_releaseBus();
             break;
 
+#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_4PCM_ENV:
             // load volume table
             Z80_upload(0x1000, tab_vol, 0x1000, 0);
@@ -305,7 +306,6 @@ void Z80_loadDriver(const u16 driver, const u16 waitReady)
             Z80_releaseBus();
             break;
 
-#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_MVS:
             // put driver in stop state
             Z80_requestBus(1);
