@@ -25,6 +25,7 @@ BINTOS= $(BIN)/bintos
 GENRES= $(BIN)/genres
 RESCOMP= $(BIN)/rescomp
 MKDIR= $(BIN)/mkdir
+FIXCHECKSUM = $(BIN)/fixchecksum
 
 SRC_C= $(wildcard *.c)
 SRC_C+= $(wildcard $(SRC)/*.c)
@@ -87,6 +88,7 @@ cleanobj:
 out/rom.bin: out/rom.out
 	$(OBJCPY) -O binary out/rom.out out/rom.bin
 	$(SIZEBND) out/rom.bin -sizealign 131072
+	$(FIXCHECKSUM) out/rom.bin 
 
 out/symbol.txt: out/rom.out
 	$(NM) out/rom.out > out/symbol.txt
