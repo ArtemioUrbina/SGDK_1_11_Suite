@@ -1,9 +1,0 @@
---- ../sgdk-240ptestsuite-orig/src/joy.c        2014-12-23 16:12:32.998312100 -0800
-+++ ./src/joy.c 2021-05-01 00:12:44.996847200 -0700
-@@ -577,7 +577,7 @@
-     v2 = TH_CONTROL_PHASE(pb);                    /* - 0 s a 0 0 0 0 - 1 c b m x y z */
-     val = TH_CONTROL_PHASE(pb);                   /* - 0 s a 1 1 1 1 - 1 c b r l d u */
-
--    if ((val & 0x0F00) != 0x0F00) v2 = (JOY_TYPE_PAD3 << JOY_TYPE_SHIFT) | 0x0F00; /* three button pad */
-+    if ((v2 & 0x0F00) != 0x0000) v2 = (JOY_TYPE_PAD3 << JOY_TYPE_SHIFT) | 0x0F00; /* three button pad */
-     else v2 = (JOY_TYPE_PAD6 << JOY_TYPE_SHIFT) | ((v2 & 0x000F) << 8); /* six button pad */

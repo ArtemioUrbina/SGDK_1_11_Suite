@@ -1,16 +1,33 @@
 /**
  *  \file joy.h
  *  \brief General controller support.
- *  \author Chilly Willy & Stephane Dallongeville
+ *  \author Chilly Willy
+ *  \author Stephane Dallongeville
  *  \date 05/2012
  *
- * This unit provides methods to read controller state.<br/>
- *<br/>
- * Here is the list of supported controller device:<br/>
- * - 3 buttons joypad<br/>
- * - 6 buttons joypad<br/>
- * - Sega Mouse<br/>
- * - team player adapter<br/>
+ * This unit provides methods to read controller state.<br>
+ *<br>
+ * Here is the list of supported controller device:<br>
+ * - 3 buttons joypad<br>
+ * - 6 buttons joypad<br>
+ * - Sega Mouse<br>
+ * - Sega Team Player adapter<br>
+ * - EA 4-Way Play<br>
+ * - the Menacer<br>
+ * - the Justifier<br>
+ * - Sega Master System pad<br>
+ * - Sega Trackball<br>
+ * - Sega Phaser<br>
+ *
+ * Although Sega Master System pad, trackball, and Phaser are supported, they aren't automatically detected on JOY_init().<br>
+ * Another caveat is that although the Menacer and Justifier are automatically recognized and supported, the support is not enabled
+ * until the programmer tells it to because of the extra overhead that lightguns add. This way, SGDK defaults to a lower overhead state for controllers.
+ * Games that can use lightguns can check and enable the lightgun as part of the init process, while normal games
+ * can ignore that and simply count on the default init state for controllers.<br>
+ * Note that mice are enabled by default by JOY_init() and will return emulated pad values for reading the port as if it were a controller.<br>
+ * This allows using a mouse as a pad for SGDK games. However, mice use a little more overhead than pads, so a game that doesn't use mice
+ * as mice and wants every last scrap of speed should check if mice are connected and turn them off to get just that extra little bit of speed.<br>
+ * If you have an existing SGDK based game that needs every last bit of speed and doesn't check for mice, unplug any mice for extra speed. Mice are only enabled if detected.
  */
 
 #ifndef _JOY_H_
@@ -68,8 +85,12 @@
 #define PORT_TYPE_MOUSE         0x03
 #define PORT_TYPE_TEAMPLAYER    0x07
 #define PORT_TYPE_PAD           0x0D
-#define PORT_TYPE_UKNOWN        0x0F
+#define PORT_TYPE_UNKNOWN       0x0F
 #define PORT_TYPE_EA4WAYPLAY    0x10
+/**
+ * \deprecated Use  PORT_TYPE_UNKNOWN instead
+ */
+#define PORT_TYPE_UKNOWN        PORT_TYPE_UNKNOWN
 
 #define JOY_SUPPORT_OFF             0x00
 #define JOY_SUPPORT_3BTN            0x01
@@ -86,17 +107,62 @@
 #define JOY_SUPPORT_KEYBOARD        0x0C
 
 
-typedef void _joyEventCallback(u16 joy, u16 changed, u16 state);
+/**
+ *  \brief
+ *      Joypad event callback.
+ *
+ *  \param joy
+ *      Joypad which generated the event.<br>
+ *      <b>JOY_1</b>    = joypad 1<br>
+ *      <b>JOY_2</b>    = joypad 2<br>
+ *      <b>...  </b>    = ...<br>
+ *      <b>JOY_8</b>    = joypad 8 (only possible with 2 teamplayers connected)<br>
+ *      <b>JOY_ALL</b>  = joypad 1 | joypad 2 | ... | joypad 8<br>
+ *  \param change
+ *      Changed state (button for which state changed).<br>
+ *      <b>BUTTON_UP</b>    = UP button<br>
+ *      <b>BUTTON_DOWN</b>  = DOWN button<br>
+ *      <b>BUTTON_LEFT</b>  = LEFT button<br>
+ *      <b>BUTTON_RIGHT</b> = RIGHT button<br>
+ *      <b>BUTTON_A</b>     = A button<br>
+ *      <b>BUTTON_B</b>     = B button<br>
+ *      <b>BUTTON_C</b>     = C button<br>
+ *      <b>BUTTON_START</b> = START button<br>
+ *      <b>BUTTON_X</b>     = X button<br>
+ *      <b>BUTTON_Y</b>     = Y button<br>
+ *      <b>BUTTON_Z</b>     = Z button<br>
+ *      <b>BUTTON_MODE</b>  = MODE button<br>
+ *      <b>BUTTON_LMB</b>   = Alias for A button for mouse<br>
+ *      <b>BUTTON_MMB</b>   = Alias for B button for mouse<br>
+ *      <b>BUTTON_RMC</b>   = Alias for C button for mouse<br>
+ *  \param state
+ *      Current joypad state.<br>
+ *<br>
+ *      Ex: Test if button START on joypad 1 just get pressed:<br>
+ *      joy = JOY_1; changed = BUTTON_START; state = BUTTON_START | (previous state)
+ */
+typedef void JoyEventCallback(u16 joy, u16 changed, u16 state);
 
+
+u8 JOY_getPortSupport(u16 port);
 
 /**
  *  \brief
  *      Initialize the controller sub system.<br>
  *
- *      Software and hardware controller port initialization.<br>
+ *      Software and hardware controller port initialization (reset and devices detection).<br>
  *      Automatically called at SGDK initialization, no need to call it manually.
  */
 void JOY_init();
+
+/**
+ *  \brief
+ *      Reset the controller sub system.<br>
+ *
+ *      It will reset the controller port state and perform device detectionSoftware and hardware controller port initialization.<br>
+ *      Automatically called at SGDK initialization, no need to call it manually.
+ */
+void JOY_reset();
 
 /**
  *  \brief
@@ -115,7 +181,7 @@ void JOY_init();
  *      <b>Ex 2</b> : if player 2 just released the A button you receive :<br>
  *      joy = JOY_2, changed = BUTTON_A, state = 0<br>
  */
-void JOY_setEventHandler(_joyEventCallback *CB);
+void JOY_setEventHandler(JoyEventCallback *CB);
 /**
  *  \brief
  *      Set peripheral support for the specified port.<br>
@@ -143,7 +209,7 @@ void JOY_setEventHandler(_joyEventCallback *CB);
  *      <b>JOY_SUPPORT_ANALOGJOY</b>      = Sega analog joypad (not yet supported)<br>
  *      <b>JOY_SUPPORT_KEYBOARD</b>       = Sega keyboard (not yet supported)<br>
  *<br>
- *      Ex : enable support for MegaMouse on second port :<br>
+ *      Ex: enable support for MegaMouse on second port<br>
  *      JOY_setSupport(PORT_2, JOY_SUPPORT_MOUSE);<br>
  *<br>
  */
@@ -153,7 +219,7 @@ void JOY_setSupport(u16 port, u16 support);
  *  \brief
  *      Get peripheral type for the specified port.<br>
  *<br>
- *      The peripheral type for each port is automatically detected during JOY_init().<br>
+ *      The peripheral type for each port is automatically detected during #JOY_init() / #JOY_reset() call.<br>
  *      This function returns that type to help decide how the port support should be set.<br>
  *      Types greater than 15 are not derived via Sega's controller ID method.<br>
  *<br>
@@ -171,7 +237,7 @@ void JOY_setSupport(u16 port, u16 support);
  *      <b>PORT_TYPE_UNKNOWN</b>        = unidentified or no peripheral<br>
  *      <b>PORT_TYPE_EA4WAYPLAY</b>     = EA 4-Way Play<br>
  *<br>
- *      Ex : get peripheral type in port 1 :<br>
+ *      Ex: get peripheral type in port 1<br>
  *      type = JOY_getPortType(PORT_1);<br>
  *<br>
  */
@@ -180,6 +246,7 @@ u8 JOY_getPortType(u16 port);
 /**
  *  \brief
  *      Get joypad peripheral type connected to the specified joypad port.<br>
+ *      The joypad peripheral type for each port is automatically detected during #JOY_init() or #JOY_reset() call.<br>
  *      Prefer this method over JOY_getPortType(..) when you need to get information<br>
  *      about peripheral connected to multi joypad adapter (as the Sega TeamPlayer).
  *
@@ -261,6 +328,21 @@ s16  JOY_readJoypadX(u16 joy);
 
 /**
  *  \brief
+ *      Write joypad X axis.
+ *
+ *  \param joy
+ *      Joypad we query state.<br>
+ *      <b>JOY_1</b>    = joypad 1<br>
+ *      <b>JOY_2</b>    = joypad 2<br>
+ *      <b>...  </b>    = ...<br>
+ *      <b>JOY_8</b>    = joypad 8 (only possible with 2 teamplayers connected)<br>
+ *  \param pos
+ *      Desired X position for joypad.<br>
+ */
+s16  JOY_writeJoypadX(u16 joy, u16 pos);
+
+/**
+ *  \brief
  *      Get joypad Y axis.
  *
  *  \param joy
@@ -282,6 +364,21 @@ s16  JOY_readJoypadX(u16 joy);
  *<br>
  */
 s16  JOY_readJoypadY(u16 joy);
+
+/**
+ *  \brief
+ *      Write joypad Y axis.
+ *
+ *  \param joy
+ *      Joypad we query state.<br>
+ *      <b>JOY_1</b>    = joypad 1<br>
+ *      <b>JOY_2</b>    = joypad 2<br>
+ *      <b>...  </b>    = ...<br>
+ *      <b>JOY_8</b>    = joypad 8 (only possible with 2 teamplayers connected)<br>
+ *  \param pos
+ *      Desired Y position for joypad.<br>
+ */
+s16  JOY_writeJoypadY(u16 joy, u16 pos);
 
 /**
  *  \brief
@@ -357,11 +454,11 @@ u16 JOY_waitPress(u16 joy, u16 btn);
  *      <b>BUTTON_MMB</b>   = Alias for B button for mouse<br>
  *      <b>BUTTON_RMC</b>   = Alias for C button for mouse<br>
  *  \param ms
- *      maximum time in ms to wait for the button press action (0 means wait infinitely).<br/>
+ *      maximum time in ms to wait for the button press action (0 means wait infinitely).<br>
  *  \return
  *      The button actually pressed or FALSE if none of specified button has be pressed in the given time.
  *<br>
- *      Ex: if we want to wait a maximum of 5 secondes for any of direction buttons<br/>
+ *      Ex: if we want to wait a maximum of 5 secondes for any of direction buttons<br>
  *      or button A to be pressed on joypad 1:<br>
  *      pressed = JOY_waitJoypad(JOY_1, BUTTON_DIR | BUTTON_A, 5000);<br>
  */

@@ -7,15 +7,16 @@
 #include "joy.h"
 #include "sys.h"
 #include "vdp.h"
+#include "z80_ctrl.h"
 
 
 #define JOY_TYPE_SHIFT          12
 
 
-static u8 joyType[8];
-static u16 joyState[8];
-static s16 joyAxisX[8];
-static s16 joyAxisY[8];
+static vu8 joyType[8];
+static vu16 joyState[8];
+static vs16 joyAxisX[8];
+static vs16 joyAxisY[8];
 
 static u8 portSupport[2];
 static u8 portType[2];
@@ -28,38 +29,63 @@ static u8 extSet;
 static u16 gport;
 
 
-static _joyEventCallback *joyEventCB;
+static JoyEventCallback *joyEventCB;
 
 
 void JOY_init()
 {
-    vu8 *pb;
-    u8  a, id;
-    u16 i;
-
+    /* Reset controller state change event callback */
     joyEventCB = NULL;
+
+    /* Then perform controller port reset and peripheral detection */
+    JOY_reset();
+}
+
+void JOY_reset()
+{
+    vu8 *pb;
+    u8 a, b;
+    u8 id;
+    u16 i;
+#if (HALT_Z80_ON_IO == 1)
+    u16 z80state;
+#endif
+
     gport = 0xFFFF;
 
-    // disable ints
+    /* disable ints (we can do it here for safety) */
     SYS_disableInts();
+
+#if (HALT_Z80_ON_IO == 1)
+    z80state = Z80_getAndRequestBus(TRUE);
+#endif
 
     /* check for EA 4-Way Play */
     pb = (vu8 *)0xa10009;
     *pb = 0x40;
     pb = (vu8 *)0xa1000b;
-    *pb = 0x43;
-    pb = (vu8 *)0xa10005;
-    *pb = 0x7C;
-    pb = (vu8 *)0xa1000b;
     *pb = 0x7F;
+    pb = (vu8 *)0xa10003;
+    *pb = 0x40;
+
     pb = (vu8 *)0xa10005;
-    *pb = 0x7C;
+    *pb = 0x0C;
+    asm volatile ("nop");
+    asm volatile ("nop");
     pb = (vu8 *)0xa10003;
     a = *pb & 3;
 
-    if (a == 0)
+    pb = (vu8 *)0xa10005;
+    *pb = 0x7C;
+    asm volatile ("nop");
+    asm volatile ("nop");
+    pb = (vu8 *)0xa10003;
+    b = *pb & 3;
+
+    /* EA 4-Way Play detected */
+    if (a != 0 && b == 0)
     {
-        /* EA 4-Way Play detected */
+        /* EA 4-Way Play is the only thing that can be plugged in as it takes both ports */
         portType[PORT_1] = PORT_TYPE_EA4WAYPLAY;
         portType[PORT_2] = PORT_TYPE_EA4WAYPLAY;
         portSupport[PORT_1] = JOY_SUPPORT_EA4WAYPLAY;
@@ -72,145 +98,141 @@ void JOY_init()
             joyAxisX[i] = 0;
             joyAxisY[i] = 0;
         }
+    }
+    else
+    {
+        /*
+         * Initialize ports for peripheral interface protocol - default to
+         * TH Control Method for pads
+         */
 
-        // restore ints
-        SYS_enableInts();
+        /* set the port bits direction */
+        pb = (vu8 *)0xa10009;
+        *pb = 0x40;
+        pb += 2;
+        *pb = 0x40;
+        pb += 2;
+        *pb = 0x40;
+        /* set the port bits value */
+        pb = (vu8 *)0xa10003;
+        *pb = 0x40;
+        pb += 2;
+        *pb = 0x40;
+        pb += 2;
+        *pb = 0x40;
 
-        /* wait a few vblanks for JOY_update() to get valid data */
+#if (HALT_Z80_ON_IO == 1)
+        if (!z80state) Z80_releaseBus();
+#endif
+
+        /* need to wait */
         VDP_waitVSync();
         VDP_waitVSync();
-        VDP_waitVSync();
 
-        return; /* EA 4-Way Play is the only thing that can be plugged in as it takes both ports */
+#if (HALT_Z80_ON_IO == 1)
+        z80state = Z80_getAndRequestBus(TRUE);
+#endif
+
+        /* get ID port 1 */
+        pb = (vu8 *)0xa10003;
+        a = *pb;
+        *pb = 0x00;
+        id = (a & 8) | (a & 4) ? 8 : 0;
+        id |= (a & 2) | (a & 1) ? 4 : 0;
+        a = *pb;
+        *pb = 0x40;
+        id |= (a & 8) | (a & 4) ? 2 : 0;
+        id |= (a & 2) | (a & 1) ? 1 : 0;
+        portType[PORT_1] = id;
+
+        /* get ID port 2 */
+        pb = (vu8 *)0xa10005;
+        a = *pb;
+        *pb = 0x00;
+        id = (a & 8) | (a & 4) ? 8 : 0;
+        id |= (a & 2) | (a & 1) ? 4 : 0;
+        a = *pb;
+        *pb = 0x40;
+        id |= (a & 8) | (a & 4) ? 2 : 0;
+        id |= (a & 2) | (a & 1) ? 1 : 0;
+        portType[PORT_2] = id;
+
+        /* now set the port support */
+        portSupport[PORT_1] = JOY_SUPPORT_OFF; /* default to off */
+        portSupport[PORT_2] = JOY_SUPPORT_OFF; /* default to off */
+
+        for (i=JOY_1; i<JOY_NUM; i++)
+        {
+            joyType[i] = JOY_TYPE_UNKNOWN; /* default to unknown */
+            joyState[i] = 0;
+            joyAxisX[i] = 0;
+            joyAxisY[i] = 0;
+        }
+
+        switch (portType[PORT_1])
+        {
+            case PORT_TYPE_MENACER:
+            case PORT_TYPE_JUSTIFIER:
+                /* init port for light gun control */
+                pb = (vu8 *)0xa10009;
+                *pb = 0x30;
+                pb = (vu8 *)0xa10003;
+                *pb = 0x30;
+                break;
+            case PORT_TYPE_MOUSE:
+            case PORT_TYPE_TEAMPLAYER:
+                /* init port for Three Line Handshake Method */
+                pb = (vu8 *)0xa10009;
+                *pb = 0x60;
+                pb = (vu8 *)0xa10003;
+                *pb = 0x60;
+                break;
+            case PORT_TYPE_PAD:
+                portSupport[PORT_1] = JOY_SUPPORT_6BTN; /* default to on for pads */
+                break;
+        }
+
+        switch (portType[PORT_2])
+        {
+            case PORT_TYPE_MENACER:
+            case PORT_TYPE_JUSTIFIER:
+                /* init port for light gun control */
+                pb = (vu8 *)0xa1000b;
+                *pb = 0x30;
+                pb = (vu8 *)0xa10005;
+                *pb = 0x30;
+                break;
+            case PORT_TYPE_MOUSE:
+            case PORT_TYPE_TEAMPLAYER:
+                /* init port for Three Line Handshake Method */
+                pb = (vu8 *)0xa1000b;
+                *pb = 0x60;
+                pb = (vu8 *)0xa10005;
+                *pb = 0x60;
+                break;
+            case PORT_TYPE_PAD:
+                portSupport[PORT_2] = JOY_SUPPORT_6BTN; /* default to on for pads */
+                break;
+        }
+
+        /* check if need to turn on an input device */
+        if ((portType[PORT_1] != PORT_TYPE_PAD) && (portType[PORT_2] != PORT_TYPE_PAD))
+        {
+            /* no pads - look for teamplayer or mouse */
+            if (portType[PORT_1] == PORT_TYPE_TEAMPLAYER)
+                JOY_setSupport(PORT_1, JOY_SUPPORT_TEAMPLAYER);
+            else if (portType[PORT_2] == PORT_TYPE_TEAMPLAYER)
+                JOY_setSupport(PORT_2, JOY_SUPPORT_TEAMPLAYER);
+            else if (portType[PORT_1] == PORT_TYPE_MOUSE)
+                JOY_setSupport(PORT_1, JOY_SUPPORT_MOUSE);
+            else if (portType[PORT_2] == PORT_TYPE_MOUSE)
+                JOY_setSupport(PORT_2, JOY_SUPPORT_MOUSE);
+        }
     }
 
-    /*
-     * Initialize ports for peripheral interface protocol - default to
-     * TH Control Method for pads
-     */
-
-    /* set the port bits direction */
-    pb = (vu8 *)0xa10009;
-    *pb = 0x40;
-    pb += 2;
-    *pb = 0x40;
-    pb += 2;
-    *pb = 0x40;
-    /* set the port bits value */
-    pb = (vu8 *)0xa10003;
-    *pb = 0x40;
-    pb += 2;
-    *pb = 0x40;
-    pb += 2;
-    *pb = 0x40;
-
-    VDP_waitVSync();
-    VDP_waitVSync();
-
-    /* get ID port 1 */
-    pb = (vu8 *)0xa10003;
-    a = *pb;
-    *pb = 0x00;
-    id = (a & 8) | (a & 4) ? 8 : 0;
-    id |= (a & 2) | (a & 1) ? 4 : 0;
-    a = *pb;
-    *pb = 0x40;
-    id |= (a & 8) | (a & 4) ? 2 : 0;
-    id |= (a & 2) | (a & 1) ? 1 : 0;
-    portType[PORT_1] = id;
-
-    /* get ID port 2 */
-    pb = (vu8 *)0xa10005;
-    a = *pb;
-    *pb = 0x00;
-    id = (a & 8) | (a & 4) ? 8 : 0;
-    id |= (a & 2) | (a & 1) ? 4 : 0;
-    a = *pb;
-    *pb = 0x40;
-    id |= (a & 8) | (a & 4) ? 2 : 0;
-    id |= (a & 2) | (a & 1) ? 1 : 0;
-    portType[PORT_2] = id;
-
-    /* now set the port support */
-
-    portSupport[PORT_1] = JOY_SUPPORT_OFF; /* default to off */
-    portSupport[PORT_2] = JOY_SUPPORT_OFF; /* default to off */
-
-    for (i=JOY_1; i<JOY_NUM; i++)
-    {
-        joyType[i] = JOY_TYPE_UNKNOWN; /* default to unknown */
-        joyState[i] = 0;
-        joyAxisX[i] = 0;
-        joyAxisY[i] = 0;
-    }
-
-    switch (portType[PORT_1])
-    {
-        case PORT_TYPE_MENACER:
-        case PORT_TYPE_JUSTIFIER:
-            /* init port for light gun control */
-            pb = (vu8 *)0xa10009;
-            *pb = 0x30;
-            pb = (vu8 *)0xa10003;
-            *pb = 0x30;
-            break;
-        case PORT_TYPE_MOUSE:
-        case PORT_TYPE_TEAMPLAYER:
-            /* init port for Three Line Handshake Method */
-            pb = (vu8 *)0xa10009;
-            *pb = 0x60;
-            pb = (vu8 *)0xa10003;
-            *pb = 0x60;
-            break;
-        case PORT_TYPE_PAD:
-            portSupport[PORT_1] = JOY_SUPPORT_6BTN; /* default to on for pads */
-            break;
-    }
-
-    switch (portType[PORT_2])
-    {
-        case PORT_TYPE_MENACER:
-        case PORT_TYPE_JUSTIFIER:
-            /* init port for light gun control */
-            pb = (vu8 *)0xa1000b;
-            *pb = 0x30;
-            pb = (vu8 *)0xa10005;
-            *pb = 0x30;
-            break;
-        case PORT_TYPE_MOUSE:
-        case PORT_TYPE_TEAMPLAYER:
-            /* init port for Three Line Handshake Method */
-            pb = (vu8 *)0xa1000b;
-            *pb = 0x60;
-            pb = (vu8 *)0xa10005;
-            *pb = 0x60;
-            break;
-        case PORT_TYPE_PAD:
-            portSupport[PORT_2] = JOY_SUPPORT_6BTN; /* default to on for pads */
-            break;
-    }
-
-    /* check if need to turn on an input device */
-    if ((portType[PORT_1] != PORT_TYPE_PAD) && (portType[PORT_2] != PORT_TYPE_PAD))
-    {
-        /* no pads - look for teamplayer or mouse */
-        if (portType[PORT_1] == PORT_TYPE_TEAMPLAYER)
-            JOY_setSupport(PORT_1, JOY_SUPPORT_TEAMPLAYER);
-        else if (portType[PORT_2] == PORT_TYPE_TEAMPLAYER)
-            JOY_setSupport(PORT_2, JOY_SUPPORT_TEAMPLAYER);
-        else if (portType[PORT_1] == PORT_TYPE_MOUSE)
-            JOY_setSupport(PORT_1, JOY_SUPPORT_MOUSE);
-        else if (portType[PORT_2] == PORT_TYPE_MOUSE)
-            JOY_setSupport(PORT_2, JOY_SUPPORT_MOUSE);
-    }
-
-    // restore ints
-    SYS_enableInts();
-
-    /* wait a few vblanks for JOY_update() to get valid data */
-    VDP_waitVSync();
-    VDP_waitVSync();
-    VDP_waitVSync();
+#if (HALT_Z80_ON_IO == 1)
+    if (!z80state) Z80_releaseBus();
+#endif
 
     /* now update pads to reflect true type (3 or 6 button) */
     if (portType[PORT_1] == PORT_TYPE_PAD)
@@ -219,10 +241,19 @@ void JOY_init()
     if (portType[PORT_2] == PORT_TYPE_PAD)
         if (joyType[JOY_2] == JOY_TYPE_PAD3)
             portSupport[PORT_2] = JOY_SUPPORT_3BTN;
+
+    /* restore ints */
+    SYS_enableInts();
+
+    /* wait a few vblanks for JOY_update() to get valid data */
+    VDP_waitVSync();
+    VDP_waitVSync();
+    VDP_waitVSync();
+
 }
 
 
-void JOY_setEventHandler(_joyEventCallback *CB)
+void JOY_setEventHandler(JoyEventCallback *CB)
 {
     joyEventCB = CB;
 }
@@ -232,14 +263,25 @@ static void externalIntCB()
 {
     vu8 *pb;
     u16 hv;
+#if (HALT_Z80_ON_IO == 1)
+    u16 z80state;
+#endif
 
     hv = GET_HVCOUNTER;                     /* read HV counter */
 
     if (extSet || (gport == 0xFFFF)) return;
 
+#if (HALT_Z80_ON_IO == 1)
+    z80state = Z80_getAndRequestBus(TRUE);
+#endif
+
     pb = (vu8 *)0xa10003 + gport*2;
     if (portType[gport] == PORT_TYPE_JUSTIFIER)
         *pb = gun | 0x10;                   /* deselect gun */
+
+#if (HALT_Z80_ON_IO == 1)
+    if (!z80state) Z80_releaseBus();
+#endif
 
     if (!gun)
     {
@@ -259,7 +301,15 @@ static void externalIntCB()
 
 void JOY_setSupport(u16 port, u16 support)
 {
+#if (HALT_Z80_ON_IO == 1)
+    u16 z80state;
+#endif
+
     if (port > PORT_2) return;
+
+#if (HALT_Z80_ON_IO == 1)
+    z80state = Z80_getAndRequestBus(TRUE);
+#endif
 
     if ((portType[port] == PORT_TYPE_MENACER) || (portType[port] == PORT_TYPE_JUSTIFIER))
     {
@@ -272,6 +322,7 @@ void JOY_setSupport(u16 port, u16 support)
             if (portSupport[port] == JOY_SUPPORT_OFF)
             {
                 SYS_setInterruptMaskLevel(7);   /* disable ints */
+
                 /* OBVIOUSLY blue gun or menacer is present due to portType ID */
                 joyType[port] = (support == JOY_SUPPORT_MENACER) ? JOY_TYPE_MENACER : JOY_TYPE_JUSTIFIER;
                 joyState[port] = 0;
@@ -289,12 +340,14 @@ void JOY_setSupport(u16 port, u16 support)
                 }
 
                 SYS_setExtIntCallback(externalIntCB);
+
                 pb = (vu8 *)0xa10009 + port*2;
                 *pb = 0xB0;                     /* enable TH->HL */
                 val = VDP_getReg(0);
                 VDP_setReg(0, val | 0x02);      /* set M3, enable HV counter latch */
                 val = VDP_getReg(11);
                 VDP_setReg(11, val | 0x08);     /* set IE2, enable external int */
+
                 SYS_setInterruptMaskLevel(1);   /* External int allowed */
 
                 /* set last since this starts the vblank handling of the gun(s) */
@@ -307,12 +360,14 @@ void JOY_setSupport(u16 port, u16 support)
             if ((portSupport[port] == JOY_SUPPORT_JUSTIFIER_BLUE) || (portSupport[port] == JOY_SUPPORT_JUSTIFIER_BOTH) || (portSupport[port] == JOY_SUPPORT_MENACER))
             {
                 SYS_setInterruptMaskLevel(7);       /* disable ints */
+
                 pb = (vu8 *)0xa10009 + port*2;
                 *pb = 0x30;                         /* disable TH->HL */
                 val = VDP_getReg(0);
                 VDP_setReg(0, val & ~0x02);         /* clear M3, disable HV counter latch */
                 val = VDP_getReg(11);
                 VDP_setReg(11, val & ~0x08);        /* clear IE2, disable external int */
+
                 SYS_setExtIntCallback(NULL);
 
                 if (port == PORT_1)
@@ -330,6 +385,7 @@ void JOY_setSupport(u16 port, u16 support)
                     joyState[JOY_6] = 0;
                 }
                 gport = 0xFFFF;
+
                 SYS_setInterruptMaskLevel(3);       /* External int disallowed */
             }
             portSupport[port] = JOY_SUPPORT_OFF;
@@ -360,6 +416,7 @@ void JOY_setSupport(u16 port, u16 support)
             if (portSupport[port] == JOY_SUPPORT_OFF)
             {
                 SYS_setInterruptMaskLevel(7);   /* disable ints */
+
                 joyType[port] = JOY_TYPE_PHASER;
                 joyState[port] = 0;
                 joyAxisX[port] = -1;
@@ -369,12 +426,14 @@ void JOY_setSupport(u16 port, u16 support)
                 gport = port;
 
                 SYS_setExtIntCallback(externalIntCB);
+
                 pb = (vu8 *)0xa10009 + port*2;
                 *pb = 0x80;                     /* enable TH->HL */
                 val = VDP_getReg(0);
                 VDP_setReg(0, val | 0x02);      /* set M3, enable HV counter latch */
                 val = VDP_getReg(11);
                 VDP_setReg(11, val | 0x08);     /* set IE2, enable external int */
+
                 SYS_setInterruptMaskLevel(1);   /* External int allowed */
 
                 /* set last since this starts the vblank handling of the gun(s) */
@@ -387,12 +446,14 @@ void JOY_setSupport(u16 port, u16 support)
             if (portSupport[port] == JOY_SUPPORT_PHASER)
             {
                 SYS_setInterruptMaskLevel(7);       /* disable ints */
+
                 pb = (vu8 *)0xa10009 + port*2;
                 *pb = 0x40;                         /* disable TH->HL */
                 val = VDP_getReg(0);
                 VDP_setReg(0, val & ~0x02);         /* clear M3, disable HV counter latch */
                 val = VDP_getReg(11);
                 VDP_setReg(11, val & ~0x08);        /* clear IE2, disable external int */
+
                 SYS_setExtIntCallback(NULL);
 
                 if (port == PORT_1)
@@ -406,6 +467,7 @@ void JOY_setSupport(u16 port, u16 support)
                     joyState[JOY_2] = 0;
                 }
                 gport = 0xFFFF;
+
                 SYS_setInterruptMaskLevel(3);       /* External int disallowed */
             }
             portSupport[port] = JOY_SUPPORT_OFF;
@@ -413,12 +475,22 @@ void JOY_setSupport(u16 port, u16 support)
     }
     else
         portSupport[port] = support;
+
+#if (HALT_Z80_ON_IO == 1)
+    if (!z80state) Z80_releaseBus();
+#endif
 }
 
+u8 JOY_getPortSupport(u16 port)
+{
+    if (port > PORT_2) return PORT_TYPE_UNKNOWN;
+
+    return portSupport[port];
+}
 
 u8 JOY_getPortType(u16 port)
 {
-    if (port > PORT_2) return PORT_TYPE_UKNOWN;
+    if (port > PORT_2) return PORT_TYPE_UNKNOWN;
 
     return portType[port];
 }
@@ -450,6 +522,7 @@ u16 JOY_readJoypad(u16 joy)
     return 0;
 }
 
+
 s16 JOY_readJoypadX(u16 joy)
 {
     if (joy < JOY_NUM)
@@ -458,10 +531,26 @@ s16 JOY_readJoypadX(u16 joy)
     return 0;
 }
 
+s16 JOY_writeJoypadX(u16 joy, u16 pos)
+{
+    if (joy < JOY_NUM)
+        joyAxisX[joy]=pos;
+
+    return 0;
+}
+
 s16 JOY_readJoypadY(u16 joy)
 {
     if (joy < JOY_NUM)
         return joyAxisY[joy];
+
+    return 0;
+}
+
+s16 JOY_writeJoypadY(u16 joy, u16 pos)
+{
+    if (joy < JOY_NUM)
+        joyAxisY[joy]=pos;
 
     return 0;
 }
@@ -498,11 +587,10 @@ u16 JOY_waitPressTime(u16 joy, u16 btn, u16 time)
     {
         u16 state;
 
-        VDP_waitVSync();
-
-        /* vblank int won't occur - do JOY_update() manually */
-        if (SYS_getInterruptMaskLevel() >= 6)
-            JOY_update();
+        // more than 1 frame remaining ? directly use VDP_waitVSync()
+        if ((maxtime - current) >= 20) VDP_waitVSync();
+        // just update JOY states
+        else JOY_update();
 
         if (joy == JOY_ALL)
         {
@@ -532,7 +620,6 @@ u16 JOY_waitPressTime(u16 joy, u16 btn, u16 time)
     return FALSE;
 }
 
-
 static u16 TH_CONTROL_PHASE(vu8 *pb)
 {
     u16 val;
@@ -549,7 +636,6 @@ static u16 TH_CONTROL_PHASE(vu8 *pb)
     return val;
 }
 
-
 static u16 read3Btn(u16 port)
 {
     vu8 *pb;
@@ -564,7 +650,6 @@ static u16 read3Btn(u16 port)
     return val | (JOY_TYPE_PAD3 << JOY_TYPE_SHIFT);
 }
 
-
 static u16 read6Btn(u16 port)
 {
     vu8 *pb;
@@ -575,9 +660,13 @@ static u16 read6Btn(u16 port)
     v1 = TH_CONTROL_PHASE(pb);                    /* - 0 s a 0 0 d u - 1 c b r l d u */
     val = TH_CONTROL_PHASE(pb);                   /* - 0 s a 0 0 d u - 1 c b r l d u */
     v2 = TH_CONTROL_PHASE(pb);                    /* - 0 s a 0 0 0 0 - 1 c b m x y z */
-    val = TH_CONTROL_PHASE(pb);                   /* - 0 s a 1 1 1 1 - 1 c b r l d u */
+    val = TH_CONTROL_PHASE(pb);                   /* - 0 s a 1 1 x x - 1 c b r l d u */
+                                                  /* x should be read as 1 on a 6 button controller but in some case we read 0 so take care of that */
 
-    if ((v2 & 0x0F00) != 0x0000) v2 = (JOY_TYPE_PAD3 << JOY_TYPE_SHIFT) | 0x0F00; /* three button pad */
+    // On a six-button controller, bits 0-3 of the high byte will always read 0.
+    // This corresponds to up + down on a 3-button controller, on some controller or emulator that is a possible combination so we try
+    // to compensante using last TH low read which should return 1111 on 6 buttons controller (not 100% though).
+    if (((v2 & 0x0F00) != 0x0000) || ((val & 0x0C00) == 0x0000)) v2 = (JOY_TYPE_PAD3 << JOY_TYPE_SHIFT) | 0x0F00; /* three button pad */
     else v2 = (JOY_TYPE_PAD6 << JOY_TYPE_SHIFT) | ((v2 & 0x000F) << 8); /* six button pad */
 
     val = ((v1 & 0x3000) >> 6) | (v1 & 0x003F);   /* 0 0 0 0 0 0 0 0 s a c b r l d u  */
@@ -586,7 +675,6 @@ static u16 read6Btn(u16 port)
 
     return val;
 }
-
 
 static u8 THREELINE_HANDSHAKE(vu8 *pb, u8 ph)
 {
@@ -607,7 +695,6 @@ static u8 THREELINE_HANDSHAKE(vu8 *pb, u8 ph)
     return val & 0x0F;
 }
 
-
 static s16 start3lhs(u16 port, u8 *hdr, u16 len)
 {
     vu8 *pb;
@@ -622,6 +709,18 @@ static s16 start3lhs(u16 port, u8 *hdr, u16 len)
 
     /* make sure port is deselected to start at first phase */
     pb = (vu8 *)0xa10003 + port*2;
+    *pb = 0x60;
+    asm volatile ("nop");
+    asm volatile ("nop");
+
+    /* quick check for at least initial mouse/tap value to cut the amount
+     * of time spent if a mouse/tap isn't really plugged in, but the game
+     * still activates the support
+     */
+    i = *pb & 0x0F;
+    if ((i != 0) && (i != 3))
+        return -1;
+
     hdr[0] = THREELINE_HANDSHAKE(pb, 0x60);
     if (retry)
     {
@@ -651,11 +750,15 @@ static u16 readMouse(u16 port)
     val = (JOY_TYPE_MOUSE << JOY_TYPE_SHIFT);
 
     sts = start3lhs(port, hdr, 4);
+    // only need to check 2 first nibbles
     if ((sts == 0) &&
         (hdr[0] == 0x00) &&
-        (hdr[1] == 0x0B) &&
-        (hdr[2] == 0x0F) &&
-        (hdr[3] == 0x0F))
+        (hdr[1] == 0x0B))
+//    if ((sts == 0) &&
+//        (hdr[0] == 0x00) &&
+//        (hdr[1] == 0x0B) &&
+//        (hdr[2] == 0x0F) &&
+//        (hdr[3] == 0x0F))
     {
         /* handle mouse */
         for (i=0; i<6; i++)
@@ -680,7 +783,7 @@ static u16 readMouse(u16 port)
             if (md[0] & 0x02)
                 my |= my ? 0xFF00 : 0xFFFF; /* y sign extend */
             joyAxisX[port] += (s16)mx;
-            joyAxisY[port] += (s16)my;
+            joyAxisY[port] -= (s16)my;
 
             if (md[1] & 8) val |= BUTTON_START;
             if (md[1] & 4) val |= BUTTON_MMB;
@@ -697,7 +800,6 @@ static u16 readMouse(u16 port)
 
     return val;
 }
-
 
 static void readTeamPlayer(u16 port)
 {
@@ -815,7 +917,6 @@ static void readTeamPlayer(u16 port)
     *pb = 0x60; /* end request */
 }
 
-
 static void readEa4WayPlay()
 {
     static const u16 xlt[4] = { JOY_1, JOY_3, JOY_4, JOY_5 };
@@ -863,7 +964,6 @@ static void readEa4WayPlay()
         if ((joyEventCB) && (change)) joyEventCB(ind, change, val);
     }
 }
-
 
 static void readLightgun(u16 port)
 {
@@ -991,7 +1091,6 @@ static void readLightgun(u16 port)
     extSet = 0;                             /* clear light sensed flag */
 }
 
-
 static u16 readTrackball(u16 port)
 {
     vu8 *pb;
@@ -1062,6 +1161,16 @@ void JOY_update()
     u16 val;
     u16 newstate;
     u16 change;
+#if (HALT_Z80_ON_IO == 1)
+    u16 z80state;
+#endif
+
+    /* disable ints */
+    SYS_disableInts();
+
+#if (HALT_Z80_ON_IO == 1)
+    z80state = Z80_getAndRequestBus(TRUE);
+#endif
 
     switch (portSupport[PORT_1])
     {
@@ -1178,4 +1287,11 @@ void JOY_update()
         default:
             break;
     }
+
+#if (HALT_Z80_ON_IO == 1)
+    if (!z80state) Z80_releaseBus();
+#endif
+
+    /* restore ints */
+    SYS_enableInts();
 }
