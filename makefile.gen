@@ -92,7 +92,7 @@ out/rom.bin: out/rom.out
 	$(SIZEBND) out/rom.bin -sizealign 131072
 	$(FIXCHECKSUM) out/rom.bin 
 	$(ADDCDHEAD) out/rom.bin out/240pSuite-1.XX_CD.bin
-	cp out/rom.bin out/240pSuite-1.XX.bin
+	mv out/rom.bin out/240pSuite-1.XX.bin
 
 out/symbol.txt: out/rom.out
 	$(NM) out/rom.out > out/symbol.txt
