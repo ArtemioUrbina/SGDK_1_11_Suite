@@ -66,6 +66,7 @@ fix32 getFPS_f()
     return result;
 }
 
+#if (REDUCED_SIZE == 0)
 void KLog(char* text)
 {
     if (*text == 0)
@@ -602,6 +603,7 @@ void KLog_F4x(s16 numDec, char* t1, fix32 v1, char* t2, fix32 v2, char* t3, fix3
     KDebug_Alert(str);
 }
 
+#endif
 
 static u16 getBitmapAllocSize(const Bitmap *bitmap)
 {

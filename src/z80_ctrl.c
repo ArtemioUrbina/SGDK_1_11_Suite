@@ -9,10 +9,10 @@
 #include "timer.h"
 
 // Z80 drivers
+#if (REDUCED_SIZE == 0)
 #include "z80_drv1.h"
 #include "z80_drv2.h"
 #include "z80_drv3.h"
-#if (REDUCED_SIZE == 0)
 #include "z80_mvs.h"
 #include "z80_mvsc.h"
 #include "z80_tfm.h"
@@ -201,6 +201,7 @@ void Z80_loadDriver(const u16 driver, const u16 waitReady)
 
     switch(driver)
     {
+#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_PCM:
             drv = z80_drv1;
             len = sizeof(z80_drv1);
@@ -211,7 +212,6 @@ void Z80_loadDriver(const u16 driver, const u16 waitReady)
             len = sizeof(z80_drv2);
             break;
 
-#if (REDUCED_SIZE == 0)
         case Z80_DRIVER_4PCM_ENV:
             drv = z80_drv3;
             len = sizeof(z80_drv3);

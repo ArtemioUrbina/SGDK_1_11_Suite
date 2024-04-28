@@ -14,6 +14,7 @@
 
 #define ym2612wr(reg, val, bank)    YM2612_writeReg(bank, reg, val)
 
+#if (REDUCED_SIZE == 0)
 
 static struct {
     u8 *data;
@@ -213,3 +214,5 @@ void TFC_play(u16 play)
         }
     }
 }
+#endif
+
